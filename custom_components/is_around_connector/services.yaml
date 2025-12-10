@@ -11,3 +11,28 @@ print_next_observance:
           domain: "sensor"
           integration: "ipp_printer_service"
       
+test_connection:
+  name: Test Connection
+  description: Tests the connection to the Is Around API.
+  fields: 
+    app_url: 
+      name: App URL
+      description: The URL of the Is Around app to connect to.
+      required: false
+      selector:
+        text:
+          type: url
+    username: 
+      name: Username
+      description: The username to use for authentication.
+      required: false
+      selector:
+        text:
+          type: text
+    password: 
+      name: Password
+      description: The password to use for authentication.
+      required: false
+      selector:
+        text:
+          type: password
