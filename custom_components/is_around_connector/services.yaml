@@ -1,0 +1,13 @@
+print_next_observance:
+  name: Print Next Observance
+  description: Fetches the next observance from Is Around and prints the attendance PDF.
+  fields: 
+    printer_entity:
+      name: Printer Entity
+      description: The entity ID of the printer to use.
+      required: false
+      selector:
+        entity:
+          domain: "sensor"
+          integration: "ipp_printer_service"
+      

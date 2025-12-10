@@ -1,0 +1,12 @@
+{
+  "domain": "is_around_connector",
+  "name": "Is Around Connector",
+  "codeowners": ["@your_github_username"],
+  "config_flow": true,
+  "dependencies": ["ipp_printer_service"],
+  "documentation": "https://github.com/your_github_username/is_around_connector",
+  "issue_tracker": "https://github.com/your_github_username/is_around_connector/issues",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "1.0.0"
+}
