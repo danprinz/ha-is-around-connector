@@ -10,6 +10,16 @@ print_next_observance:
         entity:
           domain: "sensor"
           integration: "ipp_printer_service"
+    copies:
+      name: Copies
+      description: Number of copies to print.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 99
+          mode: box
       
 test_connection:
   name: Test Connection
@@ -36,3 +46,7 @@ test_connection:
       selector:
         text:
           type: password
+
+send_attendance:
+ name: Send Attendance Push
+ description: Initiates the attendance push message flow for candidates at the Is-Around server.

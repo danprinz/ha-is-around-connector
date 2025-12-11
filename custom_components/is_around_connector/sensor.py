@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
@@ -12,8 +14,24 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_APP_URL, CONF_PRINTER_DEVICE, DOMAIN
+from .const import (
+    ATTENDANCE_PUSH_INITIATED_COUNT,
+    ATTENDANCE_STATS_ARVIT_ONLY,
+    ATTENDANCE_STATS_ATTENDING,
+    ATTENDANCE_STATS_NO,
+    ATTENDANCE_STATS_SHAHARIT_ONLY,
+    ATTENDANCE_STATS_TOTAL,
+    ATTENDANCE_STATS_YES,
+    CONF_APP_URL,
+    CONF_PRINTER_DEVICE,
+    DOMAIN,
+    NEXT_OBSERVANCE_DATE,
+)
+from .coordinator import IsAroundDataUpdateCoordinator
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -22,13 +40,26 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the Is Around Connector sensors."""
-    async_add_entities(
-        [
-            IsAroundAppUrlSensor(entry),
-            IsAroundPrinterSensor(entry),
-            IsAroundLastInvokedSensor(hass, entry),
-        ]
-    )
+    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    sensors = [
+        IsAroundAppUrlSensor(entry),
+        IsAroundPrinterSensor(entry),
+        IsAroundLastInvokedSensor(hass, entry),
+        AttendancePushInitiatedCountSensor(hass, entry),
+        NextObservanceSensor(hass, entry),
+    ]
+    summary_sensors = [
+        AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_TOTAL, "Total"),
+        AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_YES, "Yes"),
+        AttendanceSummarySensor(
+            coordinator, entry, ATTENDANCE_STATS_ARVIT_ONLY, "Arvit Only"
+        ),
+        AttendanceSummarySensor(
+            coordinator, entry, ATTENDANCE_STATS_SHAHARIT_ONLY, "Shaharit Only"
+        ),
+        AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_NO, "No"),
+    ]
+    async_add_entities(sensors + summary_sensors)
 
 
 class IsAroundAppUrlSensor(SensorEntity):
@@ -140,3 +171,167 @@ class IsAroundLastInvokedSensor(SensorEntity):
         """Update the last invoked timestamp."""
         self._attr_native_value = timestamp
         self.async_write_ha_state()
+
+
+class AttendancePushInitiatedCountSensor(SensorEntity):
+    """Sensor showing the number of users for whom attendance push was initiated."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Attendance Push Initiated Count"
+    _attr_icon = "mdi:account-multiple-check"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_attendance_push_initiated_count"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks and restore state."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_{ATTENDANCE_PUSH_INITIATED_COUNT}",
+                self._update_count,
+            )
+        )
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_{NEXT_OBSERVANCE_DATE}",
+                self._update_next_observance,
+            )
+        )
+        # Restore the last known value
+        if (
+            last_value := self.hass.data[DOMAIN].get(
+                self._entry.entry_id + "_initiated_count"
+            )
+        ) is not None:
+            self._update_count(last_value)
+
+    @callback
+    def _update_count(self, count):
+        """Update the initiated count."""
+        self._attr_native_value = count
+        self.async_write_ha_state()
+
+    @callback
+    def _update_next_observance(self, next_observance):
+        """Update the next observance attribute."""
+        self._attr_extra_state_attributes["next_observance"] = next_observance
+        self.async_write_ha_state()
+
+
+class NextObservanceSensor(SensorEntity):
+    """Sensor showing the next observance date."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Next Observance Date"
+    _attr_icon = "mdi:calendar-star"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_next_observance_date"
+        self._attr_native_value = None
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks and restore state."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_{NEXT_OBSERVANCE_DATE}",
+                self._update_date,
+            )
+        )
+        # Restore the last known value
+        if (
+            last_value := self.hass.data[DOMAIN].get(
+                self._entry.entry_id + "_" + NEXT_OBSERVANCE_DATE
+            )
+        ) is not None:
+            self._update_date({"date": last_value})
+
+    @callback
+    def _update_date(self, next_observance):
+        """Update the next observance date."""
+        self._attr_native_value = next_observance.get("date")
+        self.async_write_ha_state()
+
+
+class AttendanceSummarySensor(
+    CoordinatorEntity[IsAroundDataUpdateCoordinator], SensorEntity
+):
+    """Representation of an attendance summary sensor."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: IsAroundDataUpdateCoordinator,
+        entry: ConfigEntry,
+        sensor_type: str,
+        sensor_name: str,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._entry = entry
+        self._sensor_type = sensor_type
+        self._attr_name = f"Attendance {sensor_name}"
+        self._attr_unique_id = f"{entry.entry_id}_{sensor_type}"
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        _LOGGER.debug("Coordinator update received in sensor %s", self.entity_id)
+        if self.coordinator.data and "summary" in self.coordinator.data:
+            new_value = self.coordinator.data["summary"].get(self._sensor_type)
+            _LOGGER.debug(
+                "Updating sensor %s with new value: %s", self.entity_id, new_value
+            )
+            self._attr_native_value = new_value
+            self.async_write_ha_state()
+        else:
+            _LOGGER.debug(
+                "Coordinator data for sensor %s is empty or missing 'summary'",
+                self.entity_id,
+            )
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the state of the sensor."""
+        return self._attr_native_value

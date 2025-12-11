@@ -13,14 +13,27 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.storage import Store
 import homeassistant.util.dt as dt_util
 
 from .connector import IsAroundConnector
-from .const import CONF_APP_URL, CONF_PRINTER_ENTITY, CONF_PRINTER_DEVICE, DOMAIN
+from .const import (
+    ATTENDANCE_PUSH_INITIATED_COUNT,
+    CONF_APP_URL,
+    CONF_PRINTER_DEVICE,
+    CONF_PRINTER_ENTITY,
+    DOMAIN,
+    NEXT_OBSERVANCE_DATE,
+    SERVICE_SEND_ATTENDANCE,
+)
+from .coordinator import IsAroundDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
+
+STORAGE_VERSION = 1
+STORAGE_KEY_PREFIX = f"{DOMAIN}_"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -35,10 +48,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady("Authentication failed")
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = connector
+    store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}{entry.entry_id}")
+    coordinator = IsAroundDataUpdateCoordinator(hass, connector, entry.entry_id)
+    hass.data[DOMAIN][entry.entry_id] = {
+        "connector": connector,
+        "store": store,
+        "coordinator": coordinator,
+    }
 
-    # Store connector or coordinator if we had one
-    # For now we just need to let sensors access the entry data which they can do via entry passed to sensor
+    # Load the persisted data
+    if (data := await store.async_load()) is not None:
+        hass.data[DOMAIN][entry.entry_id + "_initiated_count"] = data.get(
+            ATTENDANCE_PUSH_INITIATED_COUNT
+        )
+        hass.data[DOMAIN][entry.entry_id + "_" + NEXT_OBSERVANCE_DATE] = data.get(
+            NEXT_OBSERVANCE_DATE
+        )
+
+    await coordinator.async_config_entry_first_refresh()
 
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
@@ -72,6 +99,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 # 3. Print PDF using IPP Printer Service
                 override_printer_entity = call.data.get("printer_entity")
+                copies = call.data.get("copies", 1)
+
+                entity_id = None
                 if override_printer_entity:
                     entity_id = override_printer_entity
                 else:
@@ -114,10 +144,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await hass.services.async_call(
                     "ipp_printer_service",
                     "print_pdf",
-                    {"entity_id": entity_id, "file_path": str(tmp_path)},
+                    {
+                        "entity_id": entity_id,
+                        "file_path": str(tmp_path),
+                        "copies": copies,
+                    },
                     blocking=True,
                 )
-                _LOGGER.info("Print service called for entity %s", entity_id)
+                _LOGGER.info(
+                    "Print service called for entity %s with %d copies",
+                    entity_id,
+                    copies,
+                )
 
                 # Update last invoked timestamp
                 now = dt_util.now()
@@ -156,10 +194,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Error in test_connection")
             raise
 
+    async def handle_send_attendance(call: ServiceCall) -> None:
+        """Handle the send_attendance service."""
+        _LOGGER.info("Starting send_attendance service")
+
+        try:
+            # Get next observance
+            observances_data = await connector.get_observances()
+            next_observance = observances_data.get("nextObservance")
+            if not next_observance or not next_observance.get("date"):
+                _LOGGER.warning(
+                    "No next observance found, cannot send attendance push."
+                )
+                return
+
+            next_observance_date = next_observance["date"]
+
+            response = await connector.send_attendance_push()
+            initiated_count = response.get("initiatedCount", 0)
+
+            # Store the initiated count and next observance date for the sensor and persist it
+            hass.data[DOMAIN][entry.entry_id + "_initiated_count"] = initiated_count
+            hass.data[DOMAIN][
+                entry.entry_id + "_" + NEXT_OBSERVANCE_DATE
+            ] = next_observance_date
+            await store.async_save(
+                {
+                    ATTENDANCE_PUSH_INITIATED_COUNT: initiated_count,
+                    NEXT_OBSERVANCE_DATE: next_observance_date,
+                }
+            )
+
+            # Update sensors
+            async_dispatcher_send(
+                hass,
+                f"{DOMAIN}_{entry.entry_id}_update_{ATTENDANCE_PUSH_INITIATED_COUNT}",
+                initiated_count,
+            )
+            async_dispatcher_send(
+                hass,
+                f"{DOMAIN}_{entry.entry_id}_update_{NEXT_OBSERVANCE_DATE}",
+                next_observance,
+            )
+
+            _LOGGER.info("Initiated attendance flow for %s users", initiated_count)
+
+            # Trigger coordinator refresh
+            await coordinator.async_request_refresh()
+
+        except Exception:
+            _LOGGER.exception("Error in send_attendance")
+            raise
+
     hass.services.async_register(
         DOMAIN, "print_next_observance", handle_print_next_observance
     )
     hass.services.async_register(DOMAIN, "test_connection", handle_test_connection)
+    hass.services.async_register(
+        DOMAIN, SERVICE_SEND_ATTENDANCE, handle_send_attendance
+    )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -169,6 +262,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         hass.data[DOMAIN].pop(entry.entry_id)
+        hass.data[DOMAIN].pop(entry.entry_id + "_initiated_count", None)
+        hass.data[DOMAIN].pop(entry.entry_id + "_" + NEXT_OBSERVANCE_DATE, None)
 
     return unload_ok
 

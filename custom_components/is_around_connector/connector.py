@@ -1,4 +1,5 @@
 """API Client for Is Around."""
+
 from __future__ import annotations
 
 import logging
@@ -8,6 +9,7 @@ import aiohttp
 import aiofiles
 
 _LOGGER = logging.getLogger(__name__)
+
 
 class IsAroundConnector:
     """Connector for Is Around API."""
@@ -23,7 +25,7 @@ class IsAroundConnector:
         """Authenticate with the API."""
         url = f"{self._app_url}/api/admin/login"
         payload = {"username": username, "password": password}
-        
+
         try:
             async with self._session.post(url, json=payload) as response:
                 if response.status == 200:
@@ -63,7 +65,25 @@ class IsAroundConnector:
         """Download PDF for a specific date."""
         url = f"{self._app_url}/api/admin/attendance/{date}/export-pdf"
         payload = {"service": "all"}
-        async with self._session.post(url, json=payload, cookies=self._cookies) as response:
+        async with self._session.post(
+            url, json=payload, cookies=self._cookies
+        ) as response:
             response.raise_for_status()
             async with aiofiles.open(output_path, mode="wb") as f:
                 await f.write(await response.read())
+
+    async def send_attendance_push(self) -> dict[str, Any]:
+        """Send attendance push message."""
+        url = f"{self._app_url}/api/admin/candidates/service-attendance/send"
+        async with self._session.post(
+            url, json={"dummy": ""}, cookies=self._cookies
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
+
+    async def get_attendance_stats(self, date: str) -> dict[str, Any]:
+        """Get attendance stats for a specific date."""
+        url = f"{self._app_url}/api/admin/attendance/{date}"
+        async with self._session.get(url, cookies=self._cookies) as response:
+            response.raise_for_status()
+            return await response.json()
