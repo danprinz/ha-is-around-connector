@@ -32,7 +32,7 @@ class IsAroundDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any] | None]
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=10),
+            update_interval=timedelta(seconds=30),
         )
 
     async def _async_update_data(self):

@@ -18,7 +18,7 @@ print_next_observance:
       selector:
         number:
           min: 1
-          max: 99
+          max: 5
           mode: box
       
 test_connection:
@@ -50,3 +50,13 @@ test_connection:
 send_attendance:
  name: Send Attendance Push
  description: Initiates the attendance push message flow for candidates at the Is-Around server.
+
+discard_session:
+  name: Discard Session
+  description: "Discards the current session cookies for the Is Around Connector. A new session will be established on the next request."
+  fields: {}
+
+build_session:
+  name: Build Session
+  description: "Builds a new session by re-authenticating with the stored credentials."
+  fields: {}

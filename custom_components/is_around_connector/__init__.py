@@ -76,6 +76,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             # 1. Get observances
             observances_data = await connector.get_observances()
+            if not observances_data:
+                _LOGGER.error("Failed to get observances, connector returned None")
+                return
+
             next_observance = observances_data.get("nextObservance")
 
             if not next_observance:
@@ -201,16 +205,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             # Get next observance
             observances_data = await connector.get_observances()
+            if not observances_data:
+                _LOGGER.error("Failed to get observances, connector returned None")
+                return
+
             next_observance = observances_data.get("nextObservance")
             if not next_observance or not next_observance.get("date"):
-                _LOGGER.warning(
-                    "No next observance found, cannot send attendance push."
-                )
+                _LOGGER.warning("No next observance found, cannot send attendance push")
                 return
 
             next_observance_date = next_observance["date"]
 
             response = await connector.send_attendance_push()
+            if not response:
+                _LOGGER.error("Failed to send attendance push, connector returned None")
+                return
             initiated_count = response.get("initiatedCount", 0)
 
             # Store the initiated count and next observance date for the sensor and persist it
@@ -246,6 +255,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Error in send_attendance")
             raise
 
+    async def handle_discard_session(call: ServiceCall) -> None:
+        """Handle the discard_session service."""
+        _LOGGER.info("Starting discard_session service")
+        connector.discard_session()
+
+    async def handle_build_session(call: ServiceCall) -> None:
+        """Handle the build_session service."""
+        _LOGGER.info("Starting build_session service")
+        await connector.build_session()
+
     hass.services.async_register(
         DOMAIN, "print_next_observance", handle_print_next_observance
     )
@@ -253,6 +272,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(
         DOMAIN, SERVICE_SEND_ATTENDANCE, handle_send_attendance
     )
+    hass.services.async_register(DOMAIN, "discard_session", handle_discard_session)
+    hass.services.async_register(DOMAIN, "build_session", handle_build_session)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
