@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
 from pathlib import Path
 import tempfile
+from typing import Any
+import uuid
 
+from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 import homeassistant.util.dt as dt_util
+import voluptuous as vol
 
 from .connector import IsAroundConnector
 from .const import (
@@ -23,8 +28,16 @@ from .const import (
     CONF_PRINTER_DEVICE,
     CONF_PRINTER_ENTITY,
     DOMAIN,
+    LESSONS_DATA,
+    MEMORIALS_DATA,
     NEXT_OBSERVANCE_DATE,
+    RESPONSE_TIMEOUT,
+    SERVICE_REQUEST_RESEND,
     SERVICE_SEND_ATTENDANCE,
+    WEEKLY_SCHEDULE_DATA,
+    WS_TYPE_OPERATION_RESULT,
+    WS_TYPE_PDF_CHUNK,
+    WS_TYPE_UPDATE_STATE,
 )
 from .coordinator import IsAroundDataUpdateCoordinator
 
@@ -36,16 +49,300 @@ STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}_"
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_UPDATE_STATE,
+        vol.Optional("entity_id"): str,  # Legacy: for old schedule/lessons/memorials
+        vol.Optional("state"): str,
+        vol.Optional("attributes", default={}): dict,
+        vol.Optional("config_entry_id"): str,  # New: for observances data
+        vol.Optional("data"): dict,  # New: for observances data
+    }
+)
+@websocket_api.async_response
+async def handle_update_state(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Handle the is_around/update_state WebSocket command."""
+    _LOGGER.debug("Received WebSocket update_state: %s", msg)
+
+    # Handle different message formats
+
+    # Format 1: config_entry_id + data with nested entity_id (new server format)
+    if "config_entry_id" in msg and "data" in msg and "entity_id" in msg["data"]:
+        config_entry_id = msg["config_entry_id"]
+        entity_id = msg["data"]["entity_id"]
+        state = msg["data"]["state"]
+        attributes = msg["data"].get("attributes", {})
+
+        if config_entry_id in hass.data.get(DOMAIN, {}):
+            entry_data = hass.data[DOMAIN][config_entry_id]
+            if isinstance(entry_data, dict):
+                if "weekly_schedule" in entity_id:
+                    entry_data[WEEKLY_SCHEDULE_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_weekly_schedule",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug(
+                        "Updated weekly_schedule for entry %s", config_entry_id
+                    )
+                elif "lessons" in entity_id:
+                    entry_data[LESSONS_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_lessons",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug("Updated lessons for entry %s", config_entry_id)
+                elif "memorials" in entity_id:
+                    entry_data[MEMORIALS_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_memorials",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug("Updated memorials for entry %s", config_entry_id)
+
+    # Format 2: entity_id at top level (legacy format)
+    elif "entity_id" in msg:
+        entity_id = msg["entity_id"]
+        state = msg["state"]
+        attributes = msg.get("attributes", {})
+
+        for entry_id, entry_data in hass.data.get(DOMAIN, {}).items():
+            if not isinstance(entry_data, dict):
+                continue
+
+            if "weekly_schedule" in entity_id:
+                entry_data[WEEKLY_SCHEDULE_DATA] = {
+                    "state": state,
+                    "attributes": attributes,
+                }
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_{entry_id}_update_weekly_schedule",
+                    state,
+                    attributes,
+                )
+            elif "lessons" in entity_id:
+                entry_data[LESSONS_DATA] = {"state": state, "attributes": attributes}
+                async_dispatcher_send(
+                    hass, f"{DOMAIN}_{entry_id}_update_lessons", state, attributes
+                )
+            elif "memorials" in entity_id:
+                entry_data[MEMORIALS_DATA] = {"state": state, "attributes": attributes}
+                async_dispatcher_send(
+                    hass, f"{DOMAIN}_{entry_id}_update_memorials", state, attributes
+                )
+
+    # Format 3: config_entry_id + data for observances (no entity_id inside data)
+    elif "config_entry_id" in msg and "data" in msg:
+        config_entry_id = msg["config_entry_id"]
+        data = msg["data"]
+
+        if config_entry_id in hass.data.get(DOMAIN, {}):
+            entry_data = hass.data[DOMAIN][config_entry_id]
+            if isinstance(entry_data, dict):
+                # Store observances data
+                entry_data["observances_data"] = data
+                # Signal any waiting futures
+                if (
+                    "observances_future" in entry_data
+                    and not entry_data["observances_future"].done()
+                ):
+                    entry_data["observances_future"].set_result(data)
+                _LOGGER.debug("Stored observances data for entry %s", config_entry_id)
+
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_PDF_CHUNK,
+        vol.Required("config_entry_id"): str,
+        vol.Required("request_id"): str,
+        vol.Required("chunk_index"): int,
+        vol.Required("total_chunks"): int,
+        vol.Required("data"): str,
+    }
+)
+@websocket_api.async_response
+async def handle_pdf_chunk(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Handle PDF chunk reception from server."""
+    config_entry_id = msg["config_entry_id"]
+    request_id = msg["request_id"]
+    chunk_index = msg["chunk_index"]
+    total_chunks = msg["total_chunks"]
+    chunk_data = msg["data"]
+
+    _LOGGER.debug(
+        "Received PDF chunk %d/%d for request %s",
+        chunk_index + 1,
+        total_chunks,
+        request_id,
+    )
+
+    if config_entry_id not in hass.data.get(DOMAIN, {}):
+        _LOGGER.error("Config entry %s not found", config_entry_id)
+        connection.send_error(msg["id"], "not_found", "Config entry not found")
+        return
+
+    entry_data = hass.data[DOMAIN][config_entry_id]
+    if not isinstance(entry_data, dict):
+        connection.send_error(msg["id"], "invalid_entry", "Invalid entry data")
+        return
+
+    # Initialize PDF chunks storage if needed
+    if "pdf_chunks" not in entry_data:
+        entry_data["pdf_chunks"] = {}
+
+    if request_id not in entry_data["pdf_chunks"]:
+        entry_data["pdf_chunks"][request_id] = {
+            "chunks": {},
+            "total_chunks": total_chunks,
+        }
+
+    # Store chunk
+    entry_data["pdf_chunks"][request_id]["chunks"][chunk_index] = chunk_data
+
+    # Check if all chunks received
+    received_chunks = len(entry_data["pdf_chunks"][request_id]["chunks"])
+    if received_chunks == total_chunks:
+        _LOGGER.info("All PDF chunks received, reassembling")
+        # Reassemble PDF
+        chunks_dict = entry_data["pdf_chunks"][request_id]["chunks"]
+        sorted_chunks = [chunks_dict[i] for i in range(total_chunks)]
+        base64_pdf = "".join(sorted_chunks)
+
+        # Signal completion
+        if "pdf_future" in entry_data and not entry_data["pdf_future"].done():
+            entry_data["pdf_future"].set_result(base64_pdf)
+
+        # Cleanup
+        del entry_data["pdf_chunks"][request_id]
+
+    connection.send_result(msg["id"])
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_TYPE_OPERATION_RESULT,
+        vol.Required("config_entry_id"): str,
+        vol.Optional("request_id"): str,
+        vol.Required("success"): bool,
+        vol.Optional("error_message"): str,
+        vol.Optional("data"): dict,
+    }
+)
+@websocket_api.async_response
+async def handle_operation_result(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Handle operation result from server."""
+    config_entry_id = msg["config_entry_id"]
+    success = msg["success"]
+    error_message = msg.get("error_message")
+    data = msg.get("data")
+
+    _LOGGER.debug(
+        "Received operation result for entry %s: success=%s",
+        config_entry_id,
+        success,
+    )
+
+    if config_entry_id not in hass.data.get(DOMAIN, {}):
+        _LOGGER.error("Config entry %s not found", config_entry_id)
+        connection.send_error(msg["id"], "not_found", "Config entry not found")
+        return
+
+    entry_data = hass.data[DOMAIN][config_entry_id]
+    if not isinstance(entry_data, dict):
+        connection.send_error(msg["id"], "invalid_entry", "Invalid entry data")
+        return
+
+    # Handle attendance push response
+    if data and "initiatedCount" in data:
+        initiated_count = data["initiatedCount"]
+        next_observance = data.get("nextObservance")
+
+        # Store values
+        hass.data[DOMAIN][config_entry_id + "_initiated_count"] = initiated_count
+        if next_observance and next_observance.get("date"):
+            hass.data[DOMAIN][config_entry_id + "_" + NEXT_OBSERVANCE_DATE] = (
+                next_observance["date"]
+            )
+
+            # Persist data
+            store = entry_data.get("store")
+            if store:
+                await store.async_save(
+                    {
+                        ATTENDANCE_PUSH_INITIATED_COUNT: initiated_count,
+                        NEXT_OBSERVANCE_DATE: next_observance["date"],
+                    }
+                )
+
+        # Update sensors
+        async_dispatcher_send(
+            hass,
+            f"{DOMAIN}_{config_entry_id}_update_{ATTENDANCE_PUSH_INITIATED_COUNT}",
+            initiated_count,
+        )
+        if next_observance:
+            async_dispatcher_send(
+                hass,
+                f"{DOMAIN}_{config_entry_id}_update_{NEXT_OBSERVANCE_DATE}",
+                next_observance,
+            )
+
+    # Handle attendance stats response
+    if data and "summary" in data:
+        # Update coordinator with stats data
+        coordinator = entry_data.get("coordinator")
+        if coordinator:
+            # Manually update coordinator data
+            coordinator.async_set_updated_data(data)
+
+    # Signal any waiting futures
+    if "operation_future" in entry_data and not entry_data["operation_future"].done():
+        if success:
+            entry_data["operation_future"].set_result(data)
+        else:
+            entry_data["operation_future"].set_exception(
+                Exception(error_message or "Operation failed")
+            )
+
+    connection.send_result(msg["id"])
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Is Around Connector from a config entry."""
     session = async_get_clientsession(hass)
-    connector = IsAroundConnector(session, entry.data[CONF_APP_URL])
-
-    # Authenticate to get the cookie
-    if not await connector.authenticate(
-        entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD]
-    ):
-        raise ConfigEntryNotReady("Authentication failed")
+    connector = IsAroundConnector(
+        hass, session, entry.data[CONF_APP_URL], entry.entry_id
+    )
 
     hass.data.setdefault(DOMAIN, {})
     store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY_PREFIX}{entry.entry_id}")
@@ -65,8 +362,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             NEXT_OBSERVANCE_DATE
         )
 
-    await coordinator.async_config_entry_first_refresh()
-
+    # No need to call coordinator refresh - it will be triggered by incoming events
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     async def handle_print_next_observance(call: ServiceCall) -> None:
@@ -74,14 +370,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Starting print_next_observance service")
 
         try:
-            # 1. Get observances
-            observances_data = await connector.get_observances()
+            # 1. Request observances via event
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            entry_data["observances_future"] = asyncio.Future()
+
+            connector.request_observances()
+
+            # Wait for response with timeout
+            try:
+                observances_data = await asyncio.wait_for(
+                    entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout waiting for observances response")
+                return
+            finally:
+                entry_data.pop("observances_future", None)
+
             if not observances_data:
-                _LOGGER.error("Failed to get observances, connector returned None")
+                _LOGGER.error("Failed to get observances")
                 return
 
             next_observance = observances_data.get("nextObservance")
-
             if not next_observance:
                 _LOGGER.warning("No next observance found")
                 return
@@ -93,13 +403,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             _LOGGER.info("Next observance date: %s", date)
 
-            # 2. Download PDF
+            # 2. Request PDF via event
+            entry_data["pdf_future"] = asyncio.Future()
+
+            connector.request_pdf(date)
+
+            # Wait for PDF response with timeout
+            try:
+                base64_pdf = await asyncio.wait_for(
+                    entry_data["pdf_future"], timeout=RESPONSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout waiting for PDF response")
+                return
+            finally:
+                entry_data.pop("pdf_future", None)
+
+            # Decode and save PDF
+            pdf_data = base64.b64decode(base64_pdf)
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
                 tmp_path = Path(tmp_file.name)
+                tmp_file.write(pdf_data)
 
             try:
-                await connector.download_pdf(date, str(tmp_path))
-                _LOGGER.info("PDF downloaded to %s", tmp_path)
+                _LOGGER.info("PDF saved to %s", tmp_path)
 
                 # 3. Print PDF using IPP Printer Service
                 override_printer_entity = call.data.get("printer_entity")
@@ -112,33 +439,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     device_id = entry.data.get(CONF_PRINTER_DEVICE)
 
                     if device_id:
-                        # Find one entity from the device to use for the printing service
                         device_registry = dr.async_get(hass)
                         device = device_registry.async_get(device_id)
                         if device:
                             entity_registry = er.async_get(hass)
-                            # entries = entity_registry.entities.get_entries_for_device(
-                            #    entry.entry_id, device_id, include_disabled_entities=False
-                            # )
-                            # The IPP printer service creates entities for the device.
-                            # We need to find an entity that belongs to the IPP integration and is associated with this device.
-                            # Wait, we are not the IPP integration, so we can't look up by entry_id of THIS integration.
-                            # We need to look up entities for the device_id.
                             all_entities = entity_registry.entities.values()
                             for ent in all_entities:
                                 if (
                                     ent.device_id == device_id
                                     and ent.platform == "ipp_printer_service"
-                                ):  # Actually platform is integration domain usually? "ipp_printer_service" custom integration
+                                ):
                                     entity_id = ent.entity_id
                                     break
 
-                            # Fallback: if we selected a device that might have entities from other integrations too?
-                            # The selector was filtered by integration="ipp_printer_service"
-                            # so the device SHOULD have entities from it.
-
                     if not entity_id:
-                        # Fallback to old entity config if present
                         entity_id = entry.data.get(CONF_PRINTER_ENTITY)
 
                 if not entity_id:
@@ -178,21 +492,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise
 
     async def handle_test_connection(call: ServiceCall) -> None:
+        """Test connection to the server."""
         _LOGGER.info("Starting test_connection service")
 
         try:
             app_url = call.data.get("app_url") or entry.data[CONF_APP_URL]
-            username = call.data.get("username") or entry.data[CONF_USERNAME]
-            password = call.data.get("password") or entry.data[CONF_PASSWORD]
-
             session = async_get_clientsession(hass)
-            connector = IsAroundConnector(session, app_url)
+            test_connector = IsAroundConnector(hass, session, app_url, "test")
 
-            # Authenticate to get the cookie
-            if not await connector.authenticate(username, password):
-                raise ConfigEntryNotReady("Authentication failed")
-
-            _LOGGER.info("Test connection successful")
+            if await test_connector.test_connection():
+                _LOGGER.info("Test connection successful")
+            else:
+                _LOGGER.error("Test connection failed")
 
         except Exception:
             _LOGGER.exception("Error in test_connection")
@@ -203,10 +514,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Starting send_attendance service")
 
         try:
-            # Get next observance
-            observances_data = await connector.get_observances()
+            # Request attendance push via event
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            entry_data["operation_future"] = asyncio.Future()
+
+            # First get next observance
+            entry_data["observances_future"] = asyncio.Future()
+            connector.request_observances()
+
+            try:
+                observances_data = await asyncio.wait_for(
+                    entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout waiting for observances response")
+                return
+            finally:
+                entry_data.pop("observances_future", None)
+
             if not observances_data:
-                _LOGGER.error("Failed to get observances, connector returned None")
+                _LOGGER.error("Failed to get observances")
                 return
 
             next_observance = observances_data.get("nextObservance")
@@ -214,39 +541,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.warning("No next observance found, cannot send attendance push")
                 return
 
-            next_observance_date = next_observance["date"]
+            # Now request attendance push
+            connector.request_attendance_push()
 
-            response = await connector.send_attendance_push()
-            if not response:
-                _LOGGER.error("Failed to send attendance push, connector returned None")
+            try:
+                response_data = await asyncio.wait_for(
+                    entry_data["operation_future"], timeout=RESPONSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout waiting for attendance push response")
                 return
-            initiated_count = response.get("initiatedCount", 0)
+            finally:
+                entry_data.pop("operation_future", None)
 
-            # Store the initiated count and next observance date for the sensor and persist it
-            hass.data[DOMAIN][entry.entry_id + "_initiated_count"] = initiated_count
-            hass.data[DOMAIN][
-                entry.entry_id + "_" + NEXT_OBSERVANCE_DATE
-            ] = next_observance_date
-            await store.async_save(
-                {
-                    ATTENDANCE_PUSH_INITIATED_COUNT: initiated_count,
-                    NEXT_OBSERVANCE_DATE: next_observance_date,
-                }
-            )
-
-            # Update sensors
-            async_dispatcher_send(
-                hass,
-                f"{DOMAIN}_{entry.entry_id}_update_{ATTENDANCE_PUSH_INITIATED_COUNT}",
-                initiated_count,
-            )
-            async_dispatcher_send(
-                hass,
-                f"{DOMAIN}_{entry.entry_id}_update_{NEXT_OBSERVANCE_DATE}",
-                next_observance,
-            )
-
-            _LOGGER.info("Initiated attendance flow for %s users", initiated_count)
+            _LOGGER.info("Attendance push completed successfully")
 
             # Trigger coordinator refresh
             await coordinator.async_request_refresh()
@@ -255,15 +563,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.exception("Error in send_attendance")
             raise
 
-    async def handle_discard_session(call: ServiceCall) -> None:
-        """Handle the discard_session service."""
-        _LOGGER.info("Starting discard_session service")
-        connector.discard_session()
-
-    async def handle_build_session(call: ServiceCall) -> None:
-        """Handle the build_session service."""
-        _LOGGER.info("Starting build_session service")
-        await connector.build_session()
+    async def handle_request_resend(call: ServiceCall) -> None:
+        """Handle the request_resend service."""
+        entity_types = call.data.get("entity_types", ["all"])
+        _LOGGER.info("Requesting resend for entity types: %s", entity_types)
+        connector.request_resend(entity_types)
 
     hass.services.async_register(
         DOMAIN, "print_next_observance", handle_print_next_observance
@@ -272,9 +576,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(
         DOMAIN, SERVICE_SEND_ATTENDANCE, handle_send_attendance
     )
-    hass.services.async_register(DOMAIN, "discard_session", handle_discard_session)
-    hass.services.async_register(DOMAIN, "build_session", handle_build_session)
+    hass.services.async_register(DOMAIN, SERVICE_REQUEST_RESEND, handle_request_resend)
+
+    # Register WebSocket commands (only once globally, not per entry)
+    websocket_api.async_register_command(hass, handle_update_state)
+    websocket_api.async_register_command(hass, handle_pdf_chunk)
+    websocket_api.async_register_command(hass, handle_operation_result)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Request initial data from is-around server
+    _LOGGER.info("Requesting initial data from is-around server")
+    connector.request_resend(["all"])
 
     return True
 

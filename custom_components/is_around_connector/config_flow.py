@@ -8,8 +8,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -17,7 +16,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .connector import IsAroundConnector
 from .const import (
     CONF_APP_URL,
-    CONF_PRINTER_ENTITY,
     CONF_PRINTER_DEVICE,
     DOMAIN,
 )
@@ -33,8 +31,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._app_url: str | None = None
-        self._username: str | None = None
-        self._password: str | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -44,48 +40,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             self._app_url = user_input[CONF_APP_URL]
             session = async_get_clientsession(self.hass)
-            connector = IsAroundConnector(session, self._app_url)
+            # Use temporary entry_id for connection test
+            connector = IsAroundConnector(self.hass, session, self._app_url, "test")
 
-            # Try to connect
+            # Test basic connectivity
             if await connector.test_connection():
-                # If connection is successful (even if 401/403), proceed to auth
-                return await self.async_step_auth()
-            else:
-                errors["base"] = "cannot_connect"
+                # Connection successful, proceed to printer selection
+                return await self.async_step_printer()
+
+            errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_APP_URL): str,
-                }
-            ),
-            errors=errors,
-        )
-
-    async def async_step_auth(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle the authentication step."""
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            self._username = user_input[CONF_USERNAME]
-            self._password = user_input[CONF_PASSWORD]
-
-            session = async_get_clientsession(self.hass)
-            connector = IsAroundConnector(session, self._app_url)
-
-            if await connector.authenticate(self._username, self._password):
-                return await self.async_step_printer()
-            else:
-                errors["base"] = "invalid_auth"
-
-        return self.async_show_form(
-            step_id="auth",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): str,
                 }
             ),
             errors=errors,
@@ -101,9 +70,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title="Is Around Connector",
                 data={
                     CONF_APP_URL: self._app_url,
-                    CONF_USERNAME: self._username,
-                    CONF_PASSWORD: self._password,
-                    CONF_PRINTER_DEVICE: user_input[CONF_PRINTER_DEVICE],
+                    CONF_PRINTER_DEVICE: user_input.get(CONF_PRINTER_DEVICE),
                 },
             )
 
@@ -111,7 +78,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="printer",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_PRINTER_DEVICE): selector.DeviceSelector(
+                    vol.Optional(CONF_PRINTER_DEVICE): selector.DeviceSelector(
                         selector.DeviceSelectorConfig(
                             integration="ipp_printer_service"
                         ),
@@ -138,15 +105,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
-            # Update config entry with new options (or data in this case since we don't have separate options)
-            # Since we are reconfiguring essential connection details, we should update data.
-            # However, Home Assistant usually keeps data separate from options.
-            # But Config Flow Reconfiguration is preferred for connection details.
-            # For this request, user asked for "support reconfiguration".
-            # The standard way to reconfigure active connection params is via reconfigure flow (HA 2024.4+),
-            # but simple OptionsFlow updating the data is a common pattern for custom integrations.
-
-            # Let's update the entry data directly
+            # Update config entry data
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data={**self.config_entry.data, **user_input}
             )
@@ -159,7 +118,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Required(
                         CONF_APP_URL, default=self.config_entry.data.get(CONF_APP_URL)
                     ): str,
-                    vol.Required(
+                    vol.Optional(
                         CONF_PRINTER_DEVICE,
                         default=self.config_entry.data.get(CONF_PRINTER_DEVICE),
                     ): selector.DeviceSelector(

@@ -1,7 +1,7 @@
 print_next_observance:
   name: Print Next Observance
-  description: Fetches the next observance from Is Around and prints the attendance PDF.
-  fields: 
+  description: Requests the next observance from Is Around server via WebSocket and prints the attendance PDF.
+  fields:
     printer_entity:
       name: Printer Entity
       description: The entity ID of the printer to use.
@@ -23,40 +23,35 @@ print_next_observance:
       
 test_connection:
   name: Test Connection
-  description: Tests the connection to the Is Around API.
-  fields: 
-    app_url: 
+  description: Tests basic connectivity to the Is Around server.
+  fields:
+    app_url:
       name: App URL
-      description: The URL of the Is Around app to connect to.
+      description: The URL of the Is Around app to test connectivity to.
       required: false
       selector:
         text:
           type: url
-    username: 
-      name: Username
-      description: The username to use for authentication.
-      required: false
-      selector:
-        text:
-          type: text
-    password: 
-      name: Password
-      description: The password to use for authentication.
-      required: false
-      selector:
-        text:
-          type: password
 
 send_attendance:
- name: Send Attendance Push
- description: Initiates the attendance push message flow for candidates at the Is-Around server.
+  name: Send Attendance Push
+  description: Requests the Is-Around server to initiate the attendance push message flow for candidates via WebSocket.
 
-discard_session:
-  name: Discard Session
-  description: "Discards the current session cookies for the Is Around Connector. A new session will be established on the next request."
-  fields: {}
-
-build_session:
-  name: Build Session
-  description: "Builds a new session by re-authenticating with the stored credentials."
-  fields: {}
+request_resend:
+  name: Request Resend State
+  description: Request the Is-Around server to resend specific state data (schedule, lessons, memorials) via WebSocket.
+  fields:
+    entity_types:
+      name: Entity Types
+      description: Types of entities to resend. Choose one or more types, or "all" to resend everything.
+      required: false
+      default: ["all"]
+      example: ["schedule", "lessons"]
+      selector:
+        select:
+          options:
+            - "all"
+            - "schedule"
+            - "lessons"
+            - "memorials"
+          multiple: true

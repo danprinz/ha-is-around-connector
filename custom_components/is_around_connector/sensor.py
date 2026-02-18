@@ -27,7 +27,10 @@ from .const import (
     CONF_APP_URL,
     CONF_PRINTER_DEVICE,
     DOMAIN,
+    LESSONS_DATA,
+    MEMORIALS_DATA,
     NEXT_OBSERVANCE_DATE,
+    WEEKLY_SCHEDULE_DATA,
 )
 from .coordinator import IsAroundDataUpdateCoordinator
 
@@ -47,6 +50,9 @@ async def async_setup_entry(
         IsAroundLastInvokedSensor(hass, entry),
         AttendancePushInitiatedCountSensor(hass, entry),
         NextObservanceSensor(hass, entry),
+        IsAroundWeeklyScheduleSensor(hass, entry),
+        IsAroundLessonsSensor(hass, entry),
+        IsAroundMemorialsSensor(hass, entry),
     ]
     summary_sensors = [
         AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_TOTAL, "Total"),
@@ -335,3 +341,144 @@ class AttendanceSummarySensor(
     def native_value(self) -> int | None:
         """Return the state of the sensor."""
         return self._attr_native_value
+
+
+class IsAroundWeeklyScheduleSensor(SensorEntity):
+    """Sensor showing the weekly schedule."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Weekly Schedule"
+    _attr_icon = "mdi:calendar-week"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_weekly_schedule"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_weekly_schedule",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            WEEKLY_SCHEDULE_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundLessonsSensor(SensorEntity):
+    """Sensor showing the lessons."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Lessons"
+    _attr_icon = "mdi:book-open-variant"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_lessons"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_lessons",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            LESSONS_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundMemorialsSensor(SensorEntity):
+    """Sensor showing the memorials."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Memorials"
+    _attr_icon = "mdi:candelabra"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_memorials"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_memorials",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            MEMORIALS_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
