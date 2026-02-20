@@ -30,6 +30,7 @@ from .const import (
     DOMAIN,
     LESSONS_DATA,
     MEMORIALS_DATA,
+    MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
     RESPONSE_TIMEOUT,
     SERVICE_REQUEST_RESEND,
@@ -118,6 +119,18 @@ async def handle_update_state(
                         attributes,
                     )
                     _LOGGER.debug("Updated memorials for entry %s", config_entry_id)
+                elif "messages" in entity_id:
+                    entry_data[MESSAGES_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_messages",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug("Updated messages for entry %s", config_entry_id)
 
     # Format 2: entity_id at top level (legacy format)
     elif "entity_id" in msg:
@@ -149,6 +162,11 @@ async def handle_update_state(
                 entry_data[MEMORIALS_DATA] = {"state": state, "attributes": attributes}
                 async_dispatcher_send(
                     hass, f"{DOMAIN}_{entry_id}_update_memorials", state, attributes
+                )
+            elif "messages" in entity_id:
+                entry_data[MESSAGES_DATA] = {"state": state, "attributes": attributes}
+                async_dispatcher_send(
+                    hass, f"{DOMAIN}_{entry_id}_update_messages", state, attributes
                 )
 
     # Format 3: config_entry_id + data for observances (no entity_id inside data)

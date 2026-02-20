@@ -29,6 +29,7 @@ from .const import (
     DOMAIN,
     LESSONS_DATA,
     MEMORIALS_DATA,
+    MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
     WEEKLY_SCHEDULE_DATA,
 )
@@ -53,6 +54,7 @@ async def async_setup_entry(
         IsAroundWeeklyScheduleSensor(hass, entry),
         IsAroundLessonsSensor(hass, entry),
         IsAroundMemorialsSensor(hass, entry),
+        IsAroundMessagesSensor(hass, entry),
     ]
     summary_sensors = [
         AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_TOTAL, "Total"),
@@ -478,6 +480,53 @@ class IsAroundMemorialsSensor(SensorEntity):
 
     @callback
     def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundMessagesSensor(SensorEntity):
+    """Sensor showing community messages."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Messages"
+    _attr_icon = "mdi:message-text-outline"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_messages"
+        self._attr_native_value = 0
+        self._attr_extra_state_attributes = {"messages": []}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_messages",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            MESSAGES_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: int, attributes: dict) -> None:
         """Update the sensor with new data."""
         self._attr_native_value = state
         self._attr_extra_state_attributes = attributes

@@ -41,6 +41,7 @@ RESPONSE_STATUS_ERROR = "error"
 WEEKLY_SCHEDULE_DATA = "weekly_schedule_data"
 LESSONS_DATA = "lessons_data"
 MEMORIALS_DATA = "memorials_data"
+MESSAGES_DATA = "messages_data"
 
 # Services
 SERVICE_REQUEST_RESEND = "request_resend"
