@@ -371,21 +371,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         try:
             # 1. Request observances via event
-            entry_data = hass.data[DOMAIN][entry.entry_id]
-            entry_data["observances_future"] = asyncio.Future()
-
-            connector.request_observances()
-
-            # Wait for response with timeout
-            try:
-                observances_data = await asyncio.wait_for(
-                    entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.error("Timeout waiting for observances response")
-                return
-            finally:
-                entry_data.pop("observances_future", None)
+            observances_data = await connector.async_get_observances()
 
             if not observances_data:
                 _LOGGER.error("Failed to get observances")
@@ -404,6 +390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info("Next observance date: %s", date)
 
             # 2. Request PDF via event
+            entry_data = hass.data[DOMAIN][entry.entry_id]
             entry_data["pdf_future"] = asyncio.Future()
 
             connector.request_pdf(date)
@@ -514,23 +501,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Starting send_attendance service")
 
         try:
-            # Request attendance push via event
-            entry_data = hass.data[DOMAIN][entry.entry_id]
-            entry_data["operation_future"] = asyncio.Future()
-
             # First get next observance
-            entry_data["observances_future"] = asyncio.Future()
-            connector.request_observances()
-
-            try:
-                observances_data = await asyncio.wait_for(
-                    entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.error("Timeout waiting for observances response")
-                return
-            finally:
-                entry_data.pop("observances_future", None)
+            observances_data = await connector.async_get_observances()
 
             if not observances_data:
                 _LOGGER.error("Failed to get observances")
@@ -542,6 +514,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             # Now request attendance push
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            entry_data["operation_future"] = asyncio.Future()
             connector.request_attendance_push()
 
             try:

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
@@ -11,11 +12,13 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 from .const import (
+    DOMAIN,
     EVENT_REQUEST_ATTENDANCE_PUSH,
     EVENT_REQUEST_ATTENDANCE_STATS,
     EVENT_REQUEST_OBSERVANCES,
     EVENT_REQUEST_PDF,
     EVENT_REQUEST_RESEND,
+    RESPONSE_TIMEOUT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +59,41 @@ class IsAroundConnector:
             EVENT_REQUEST_OBSERVANCES,
             {"config_entry_id": self._entry_id},
         )
+
+    async def async_get_observances(self) -> dict[str, Any] | None:
+        """Request and wait for observances data from server.
+
+        Returns:
+            Dictionary containing observances data with 'nextObservance' key,
+            or None if timeout or error occurred.
+        """
+        _LOGGER.debug("Requesting observances data")
+
+        # Get entry data storage
+        entry_data = self._hass.data[DOMAIN].get(self._entry_id)
+        if not entry_data or not isinstance(entry_data, dict):
+            _LOGGER.error("Entry data not found for %s", self._entry_id)
+            return None
+
+        # Create future to wait for response
+        entry_data["observances_future"] = asyncio.Future()
+
+        # Fire event to request observances
+        self.request_observances()
+
+        # Wait for response with timeout
+        try:
+            observances_data = await asyncio.wait_for(
+                entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
+            )
+            _LOGGER.debug("Received observances data: %s", observances_data)
+            return observances_data
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Timeout waiting for observances response")
+            return None
+        finally:
+            # Clean up future
+            entry_data.pop("observances_future", None)
 
     def request_pdf(self, date: str, service: str = "all") -> None:
         """Request PDF generation from server via event."""

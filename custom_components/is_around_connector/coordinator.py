@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .connector import IsAroundConnector
-from .const import DOMAIN, NEXT_OBSERVANCE_DATE, RESPONSE_TIMEOUT
+from .const import DOMAIN, RESPONSE_TIMEOUT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,59 +35,38 @@ class IsAroundDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any] | None]
         )
 
     async def _async_update_data(self) -> dict[str, Any] | None:
-        """Update data via event-based requests."""
+        """Update data via event-based requests.
+
+        Fetches the next observance and its attendance statistics.
+        This coordinator is self-sufficient and doesn't rely on external state.
+        """
         _LOGGER.debug("Coordinator update triggered")
 
-        # Get the next observance date that was stored when the service was called
-        next_observance_date = self._hass.data[DOMAIN].get(
-            self._entry_id + "_" + NEXT_OBSERVANCE_DATE
-        )
-        _LOGGER.debug("Next observance date from hass.data: %s", next_observance_date)
-
-        if not next_observance_date:
-            # No observance to track, so we don't poll for stats
-            _LOGGER.debug("No next observance date to track, skipping poll")
-            return None
-
         try:
-            # First, check if the next observance is still the same
-            _LOGGER.debug("Requesting current observances to check if still valid")
-            entry_data = self._hass.data[DOMAIN][self._entry_id]
-            entry_data["observances_future"] = asyncio.Future()
+            # Always fetch current observances
+            _LOGGER.debug("Fetching current observances data")
+            observances_data = await self.connector.async_get_observances()
 
-            self.connector.request_observances()
-
-            try:
-                observances_data = await asyncio.wait_for(
-                    entry_data["observances_future"], timeout=RESPONSE_TIMEOUT
-                )
-            except asyncio.TimeoutError:
-                _LOGGER.warning(
-                    "Timeout waiting for observances response in coordinator"
-                )
-                return None
-            finally:
-                entry_data.pop("observances_future", None)
-
-            if (
-                not observances_data
-                or not observances_data.get("nextObservance")
-                or observances_data["nextObservance"].get("date")
-                != next_observance_date
-            ):
-                # The observance has changed, so we stop polling for stats
-                _LOGGER.info("Next observance has changed, stopping polling for stats")
-                self._hass.data[DOMAIN].pop(
-                    self._entry_id + "_" + NEXT_OBSERVANCE_DATE, None
-                )
+            if not observances_data:
+                _LOGGER.debug("No observances data received, skipping stats poll")
                 return None
 
-            # If the observance is the same, fetch the stats
+            next_observance = observances_data.get("nextObservance")
+            if not next_observance:
+                _LOGGER.debug("No next observance found, skipping stats poll")
+                return None
+
+            next_observance_date = next_observance.get("date")
+            if not next_observance_date:
+                _LOGGER.debug("Next observance has no date, skipping stats poll")
+                return None
+
+            # Fetch attendance stats for the current next observance
             _LOGGER.debug(
-                "Observance date is still valid, requesting attendance stats for %s",
-                next_observance_date,
+                "Fetching attendance stats for observance: %s", next_observance_date
             )
 
+            entry_data = self._hass.data[DOMAIN][self._entry_id]
             entry_data["operation_future"] = asyncio.Future()
             self.connector.request_attendance_stats(next_observance_date)
 
