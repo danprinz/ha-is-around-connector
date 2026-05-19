@@ -11,7 +11,8 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
+from homeassistant.const import Platform
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -27,6 +28,7 @@ from .const import (
     CONF_APP_URL,
     CONF_PRINTER_DEVICE,
     DOMAIN,
+    LESSON_PROGRAMS_DATA,
     LESSONS_DATA,
     MEMORIALS_DATA,
     MESSAGES_DATA,
@@ -68,6 +70,56 @@ async def async_setup_entry(
         AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_NO, "No"),
     ]
     async_add_entities(sensors + summary_sensors)
+
+    # Dynamic lesson-program entities — created on first push, updated on resend
+    lesson_program_entities: dict[str, IsAroundLessonProgramSensor] = {}
+
+    @callback
+    def _handle_lesson_program(slug: str, state: str, attributes: dict) -> None:
+        if slug in lesson_program_entities:
+            lesson_program_entities[slug]._update_data(state, attributes)
+        else:
+            # Migrate entity_id if a previous run registered this unique_id under a
+            # name-derived entity_id (e.g. Hebrew transliteration) instead of the
+            # expected slug-derived one.
+            expected_entity_id = f"sensor.{DOMAIN}_{slug}"
+            unique_id = f"{entry.entry_id}_{slug}"
+            entity_reg = er.async_get(hass)
+            existing_entity_id = entity_reg.async_get_entity_id(
+                Platform.SENSOR, DOMAIN, unique_id
+            )
+            if existing_entity_id and existing_entity_id != expected_entity_id:
+                entity_reg.async_update_entity(
+                    existing_entity_id, new_entity_id=expected_entity_id
+                )
+            sensor = IsAroundLessonProgramSensor(hass, entry, slug, state, attributes)
+            lesson_program_entities[slug] = sensor
+            async_add_entities([sensor])
+
+    @callback
+    def _handle_lesson_program_removed(slug: str) -> None:
+        lesson_program_entities.pop(slug, None)
+
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            f"{DOMAIN}_{entry.entry_id}_update_lesson_program",
+            _handle_lesson_program,
+        )
+    )
+    entry.async_on_unload(
+        async_dispatcher_connect(
+            hass,
+            f"{DOMAIN}_{entry.entry_id}_remove_lesson_program",
+            _handle_lesson_program_removed,
+        )
+    )
+
+    # Restore any lesson programs already received before this platform was set up
+    for slug, data in hass.data[DOMAIN][entry.entry_id].get(
+        LESSON_PROGRAMS_DATA, {}
+    ).items():
+        _handle_lesson_program(slug, data["state"], data["attributes"])
 
 
 class IsAroundAppUrlSensor(SensorEntity):
@@ -530,4 +582,46 @@ class IsAroundMessagesSensor(SensorEntity):
         """Update the sensor with new data."""
         self._attr_native_value = state
         self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundLessonProgramSensor(SensorEntity):
+    """Sensor representing a single lesson program pushed by the is-around server."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:book-clock"
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        slug: str,
+        state: str,
+        attributes: dict,
+    ) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._slug = slug
+        self.entity_id = f"sensor.{DOMAIN}_{slug}"
+        self._attr_unique_id = f"{entry.entry_id}_{slug}"
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self._attr_name = attributes.get("name", slug)
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Apply a fresh push from the server."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self._attr_name = attributes.get("name", self._slug)
         self.async_write_ha_state()

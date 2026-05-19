@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import date, timedelta
+from functools import partial
 import logging
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 import uuid
@@ -17,6 +20,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 import homeassistant.util.dt as dt_util
 import voluptuous as vol
@@ -28,6 +32,7 @@ from .const import (
     CONF_PRINTER_DEVICE,
     CONF_PRINTER_ENTITY,
     DOMAIN,
+    LESSON_PROGRAMS_DATA,
     LESSONS_DATA,
     MEMORIALS_DATA,
     MESSAGES_DATA,
@@ -131,6 +136,24 @@ async def handle_update_state(
                         attributes,
                     )
                     _LOGGER.debug("Updated messages for entry %s", config_entry_id)
+                elif "lesson_program" in entity_id:
+                    slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
+                    lesson_programs = entry_data.setdefault(LESSON_PROGRAMS_DATA, {})
+                    lesson_programs[slug] = {
+                        "entity_id": entity_id,
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_lesson_program",
+                        slug,
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug(
+                        "Updated lesson_program %s for entry %s", slug, config_entry_id
+                    )
 
     # Format 2: entity_id at top level (legacy format)
     elif "entity_id" in msg:
@@ -167,6 +190,21 @@ async def handle_update_state(
                 entry_data[MESSAGES_DATA] = {"state": state, "attributes": attributes}
                 async_dispatcher_send(
                     hass, f"{DOMAIN}_{entry_id}_update_messages", state, attributes
+                )
+            elif "lesson_program" in entity_id:
+                slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
+                lesson_programs = entry_data.setdefault(LESSON_PROGRAMS_DATA, {})
+                lesson_programs[slug] = {
+                    "entity_id": entity_id,
+                    "state": state,
+                    "attributes": attributes,
+                }
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_{entry_id}_update_lesson_program",
+                    slug,
+                    state,
+                    attributes,
                 )
 
     # Format 3: config_entry_id + data for observances (no entity_id inside data)
@@ -353,6 +391,87 @@ async def handle_operation_result(
             )
 
     connection.send_result(msg["id"])
+
+
+_LESSON_PROGRAM_DATE_RE = re.compile(
+    r"lesson_program_(\d{4}_\d{2}_\d{2})(?:_\d+)?$"
+)
+
+
+def _lesson_program_is_stale(event_date_str: str | None, cutoff: date) -> bool:
+    if not event_date_str:
+        return False
+    try:
+        return date.fromisoformat(event_date_str) < cutoff
+    except ValueError:
+        return False
+
+
+def _remove_lesson_program_from_registry(
+    hass: HomeAssistant,
+    entity_reg: er.EntityRegistry,
+    entry_id: str,
+    slug: str,
+    entity_id: str | None = None,
+) -> None:
+    if entity_id is None:
+        unique_id = f"{entry_id}_{slug}"
+        entity_id = entity_reg.async_get_entity_id(Platform.SENSOR, DOMAIN, unique_id)
+    if entity_id:
+        entity_reg.async_remove(entity_id)
+    async_dispatcher_send(hass, f"{DOMAIN}_{entry_id}_remove_lesson_program", slug)
+
+
+async def _cleanup_stale_lesson_programs(
+    hass: HomeAssistant, entry_id: str, _now: object = None
+) -> None:
+    """Remove lesson-program entities whose event_date is more than 1 day in the past."""
+    cutoff = dt_util.now().date() - timedelta(days=1)
+    entity_reg = er.async_get(hass)
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if not isinstance(entry_data, dict):
+        return
+
+    lesson_programs: dict = entry_data.get(LESSON_PROGRAMS_DATA, {})
+
+    # Remove stale in-memory programs (server is still within 14-day window but date passed)
+    stale = [
+        slug
+        for slug, data in list(lesson_programs.items())
+        if _lesson_program_is_stale(
+            data.get("attributes", {}).get("event_date"), cutoff
+        )
+    ]
+    for slug in stale:
+        del lesson_programs[slug]
+        _remove_lesson_program_from_registry(hass, entity_reg, entry_id, slug)
+        _LOGGER.debug("Removed stale lesson program: %s", slug)
+
+    # Remove orphaned registry entries (server no longer pushes them)
+    for entity_entry in list(entity_reg.entities.values()):
+        if (
+            entity_entry.domain != "sensor"
+            or entity_entry.platform != DOMAIN
+            or entity_entry.config_entry_id != entry_id
+        ):
+            continue
+        m = _LESSON_PROGRAM_DATE_RE.search(entity_entry.unique_id or "")
+        if not m:
+            continue
+        slug = (entity_entry.unique_id or "")[len(entry_id) + 1 :]
+        if slug in lesson_programs:
+            continue  # Still active — already checked above
+        date_str = m.group(1).replace("_", "-")
+        try:
+            if date.fromisoformat(date_str) < cutoff:
+                _remove_lesson_program_from_registry(
+                    hass, entity_reg, entry_id, slug, entity_entry.entity_id
+                )
+                _LOGGER.debug(
+                    "Removed orphaned lesson program entity: %s", entity_entry.entity_id
+                )
+        except ValueError:
+            pass
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -580,6 +699,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Request initial data from is-around server
     _LOGGER.info("Requesting initial data from is-around server")
     connector.request_resend(["all"])
+
+    # Run lesson-program cleanup at startup and then daily
+    _cleanup_cb = partial(_cleanup_stale_lesson_programs, hass, entry.entry_id)
+    hass.async_create_task(_cleanup_cb())
+    entry.async_on_unload(
+        async_track_time_interval(hass, _cleanup_cb, timedelta(days=1))
+    )
 
     return True
 

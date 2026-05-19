@@ -54,4 +54,5 @@ request_resend:
             - "schedule"
             - "lessons"
             - "memorials"
+            - "lesson_programs"
           multiple: true

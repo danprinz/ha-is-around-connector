@@ -42,6 +42,7 @@ WEEKLY_SCHEDULE_DATA = "weekly_schedule_data"
 LESSONS_DATA = "lessons_data"
 MEMORIALS_DATA = "memorials_data"
 MESSAGES_DATA = "messages_data"
+LESSON_PROGRAMS_DATA = "lesson_programs_data"
 
 # Services
 SERVICE_REQUEST_RESEND = "request_resend"
