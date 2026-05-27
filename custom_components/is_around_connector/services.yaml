@@ -2,6 +2,19 @@ print_next_observance:
   name: Print Next Observance
   description: Requests the next observance from Is Around server via WebSocket and prints the attendance PDF.
   fields:
+    service:
+      name: Service
+      description: What service to request.
+      required: false
+      default: "all"
+      example: "arvit"
+      selector:
+        select:
+          options:
+            - "all"
+            - "arvit"
+            - "shaharit"
+          multiple: false
     printer_entity:
       name: Printer Entity
       description: The entity ID of the printer to use.

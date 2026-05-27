@@ -298,7 +298,9 @@ async def handle_pdf_chunk(
 
         # Signal the correct future based on PDF kind
         stored_kind = entry_data["pdf_chunks"][request_id].get("kind", "attendance")
-        future_key = "schedule_pdf_future" if stored_kind == "schedule" else "pdf_future"
+        future_key = (
+            "schedule_pdf_future" if stored_kind == "schedule" else "pdf_future"
+        )
         if future_key in entry_data and not entry_data[future_key].done():
             entry_data[future_key].set_result(base64_pdf)
 
@@ -401,9 +403,7 @@ async def handle_operation_result(
     connection.send_result(msg["id"])
 
 
-_LESSON_PROGRAM_DATE_RE = re.compile(
-    r"lesson_program_(\d{4}_\d{2}_\d{2})(?:_\d+)?$"
-)
+_LESSON_PROGRAM_DATE_RE = re.compile(r"lesson_program_(\d{4}_\d{2}_\d{2})(?:_\d+)?$")
 
 
 def _lesson_program_is_stale(event_date_str: str | None, cutoff: date) -> bool:
@@ -538,7 +538,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry_data = hass.data[DOMAIN][entry.entry_id]
             entry_data["pdf_future"] = asyncio.Future()
 
-            connector.request_pdf(date)
+            service = call.data.get("service", "all")
+
+            connector.request_pdf(date, service)
 
             # Wait for PDF response with timeout
             try:
