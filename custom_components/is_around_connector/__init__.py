@@ -32,12 +32,14 @@ from .const import (
     CONF_PRINTER_DEVICE,
     CONF_PRINTER_ENTITY,
     DOMAIN,
+    EVENT_REQUEST_SCHEDULE_PDF,
     LESSON_PROGRAMS_DATA,
     LESSONS_DATA,
     MEMORIALS_DATA,
     MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
     RESPONSE_TIMEOUT,
+    SERVICE_PRINT_WEEKLY_SCHEDULE,
     SERVICE_REQUEST_RESEND,
     SERVICE_SEND_ATTENDANCE,
     WEEKLY_SCHEDULE_DATA,
@@ -236,6 +238,7 @@ async def handle_update_state(
         vol.Required("chunk_index"): int,
         vol.Required("total_chunks"): int,
         vol.Required("data"): str,
+        vol.Optional("kind", default="attendance"): str,
     }
 )
 @websocket_api.async_response
@@ -250,12 +253,14 @@ async def handle_pdf_chunk(
     chunk_index = msg["chunk_index"]
     total_chunks = msg["total_chunks"]
     chunk_data = msg["data"]
+    kind = msg.get("kind", "attendance")
 
     _LOGGER.debug(
-        "Received PDF chunk %d/%d for request %s",
+        "Received PDF chunk %d/%d for request %s (kind=%s)",
         chunk_index + 1,
         total_chunks,
         request_id,
+        kind,
     )
 
     if config_entry_id not in hass.data.get(DOMAIN, {}):
@@ -276,6 +281,7 @@ async def handle_pdf_chunk(
         entry_data["pdf_chunks"][request_id] = {
             "chunks": {},
             "total_chunks": total_chunks,
+            "kind": kind,
         }
 
     # Store chunk
@@ -284,15 +290,17 @@ async def handle_pdf_chunk(
     # Check if all chunks received
     received_chunks = len(entry_data["pdf_chunks"][request_id]["chunks"])
     if received_chunks == total_chunks:
-        _LOGGER.info("All PDF chunks received, reassembling")
+        _LOGGER.info("All PDF chunks received, reassembling (kind=%s)", kind)
         # Reassemble PDF
         chunks_dict = entry_data["pdf_chunks"][request_id]["chunks"]
         sorted_chunks = [chunks_dict[i] for i in range(total_chunks)]
         base64_pdf = "".join(sorted_chunks)
 
-        # Signal completion
-        if "pdf_future" in entry_data and not entry_data["pdf_future"].done():
-            entry_data["pdf_future"].set_result(base64_pdf)
+        # Signal the correct future based on PDF kind
+        stored_kind = entry_data["pdf_chunks"][request_id].get("kind", "attendance")
+        future_key = "schedule_pdf_future" if stored_kind == "schedule" else "pdf_future"
+        if future_key in entry_data and not entry_data[future_key].done():
+            entry_data[future_key].set_result(base64_pdf)
 
         # Cleanup
         del entry_data["pdf_chunks"][request_id]
@@ -680,6 +688,100 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Requesting resend for entity types: %s", entity_types)
         connector.request_resend(entity_types)
 
+    async def handle_print_weekly_schedule(call: ServiceCall) -> None:
+        """Handle the print_weekly_schedule service."""
+        _LOGGER.info("Starting print_weekly_schedule service")
+
+        try:
+            date_str = call.data.get("date") or dt_util.now().date().isoformat()
+            _LOGGER.info("Requesting weekly schedule PDF for date: %s", date_str)
+
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            entry_data["schedule_pdf_future"] = asyncio.Future()
+
+            hass.bus.async_fire(
+                EVENT_REQUEST_SCHEDULE_PDF,
+                {"config_entry_id": entry.entry_id, "date": date_str},
+            )
+
+            try:
+                base64_pdf = await asyncio.wait_for(
+                    entry_data["schedule_pdf_future"], timeout=RESPONSE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.error("Timeout waiting for schedule PDF response")
+                return
+            finally:
+                entry_data.pop("schedule_pdf_future", None)
+
+            pdf_data = base64.b64decode(base64_pdf)
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+                tmp_path = Path(tmp_file.name)
+                tmp_file.write(pdf_data)
+
+            try:
+                _LOGGER.info("Schedule PDF saved to %s", tmp_path)
+
+                override_printer_entity = call.data.get("printer_entity")
+                copies = call.data.get("copies", 1)
+
+                entity_id = None
+                if override_printer_entity:
+                    entity_id = override_printer_entity
+                else:
+                    device_id = entry.data.get(CONF_PRINTER_DEVICE)
+
+                    if device_id:
+                        device_registry = dr.async_get(hass)
+                        device = device_registry.async_get(device_id)
+                        if device:
+                            entity_registry = er.async_get(hass)
+                            all_entities = entity_registry.entities.values()
+                            for ent in all_entities:
+                                if (
+                                    ent.device_id == device_id
+                                    and ent.platform == "ipp_printer_service"
+                                ):
+                                    entity_id = ent.entity_id
+                                    break
+
+                    if not entity_id:
+                        entity_id = entry.data.get(CONF_PRINTER_ENTITY)
+
+                if not entity_id:
+                    _LOGGER.error("No printer entity found for printing")
+                    return
+
+                await hass.services.async_call(
+                    "ipp_printer_service",
+                    "print_pdf",
+                    {
+                        "entity_id": entity_id,
+                        "file_path": str(tmp_path),
+                        "copies": copies,
+                    },
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "Schedule print service called for entity %s with %d copies",
+                    entity_id,
+                    copies,
+                )
+
+                now = dt_util.now()
+                async_dispatcher_send(
+                    hass, f"{DOMAIN}_{entry.entry_id}_update_last_invoked", now
+                )
+
+            finally:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                    _LOGGER.debug("Temporary schedule PDF file removed")
+
+        except Exception:
+            _LOGGER.exception("Error in print_weekly_schedule")
+            raise
+
     hass.services.async_register(
         DOMAIN, "print_next_observance", handle_print_next_observance
     )
@@ -688,6 +790,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN, SERVICE_SEND_ATTENDANCE, handle_send_attendance
     )
     hass.services.async_register(DOMAIN, SERVICE_REQUEST_RESEND, handle_request_resend)
+    hass.services.async_register(
+        DOMAIN, SERVICE_PRINT_WEEKLY_SCHEDULE, handle_print_weekly_schedule
+    )
 
     # Register WebSocket commands (only once globally, not per entry)
     websocket_api.async_register_command(hass, handle_update_state)

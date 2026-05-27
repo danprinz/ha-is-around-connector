@@ -11,6 +11,7 @@ CONF_PRINTER_DEVICE = "printer_device"
 DEFAULT_NAME = "Is Around Connector"
 
 SERVICE_SEND_ATTENDANCE = "send_attendance"
+SERVICE_PRINT_WEEKLY_SCHEDULE = "print_weekly_schedule"
 ATTENDANCE_PUSH_INITIATED_COUNT = "attendance_push_initiated_count"
 NEXT_OBSERVANCE_DATE = "next_observance_date"
 
@@ -27,6 +28,7 @@ EVENT_REQUEST_PDF = "is_around_connector_request_pdf"
 EVENT_REQUEST_ATTENDANCE_PUSH = "is_around_connector_request_attendance_push"
 EVENT_REQUEST_ATTENDANCE_STATS = "is_around_connector_request_attendance_stats"
 EVENT_REQUEST_RESEND = "is_around_connector_request_resend"
+EVENT_REQUEST_SCHEDULE_PDF = "is_around_connector_request_schedule_pdf"
 
 # WebSocket command types received from server (responses)
 WS_TYPE_UPDATE_STATE = "is_around/update_state"

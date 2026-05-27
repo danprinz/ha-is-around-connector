@@ -37,6 +37,35 @@ send_attendance:
   name: Send Attendance Push
   description: Requests the Is-Around server to initiate the attendance push message flow for candidates via WebSocket.
 
+print_weekly_schedule:
+  name: Print Weekly Schedule
+  description: Requests the weekly schedule PDF from the Is Around server and prints it.
+  fields:
+    date:
+      name: Date
+      description: The date (YYYY-MM-DD) for which to print the active schedule. Defaults to today when omitted.
+      required: false
+      selector:
+        text:
+    printer_entity:
+      name: Printer Entity
+      description: The entity ID of the printer to use.
+      required: false
+      selector:
+        entity:
+          domain: "sensor"
+          integration: "ipp_printer_service"
+    copies:
+      name: Copies
+      description: Number of copies to print.
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 5
+          mode: box
+
 request_resend:
   name: Request Resend State
   description: Request the Is-Around server to resend specific state data (schedule, lessons, memorials) via WebSocket.
