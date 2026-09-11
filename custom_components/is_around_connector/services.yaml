@@ -97,4 +97,5 @@ request_resend:
             - "lessons"
             - "memorials"
             - "lesson_programs"
+            - "seating"
           multiple: true

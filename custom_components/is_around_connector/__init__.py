@@ -39,6 +39,7 @@ from .const import (
     MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
     RESPONSE_TIMEOUT,
+    SEATING_DATA,
     SERVICE_PRINT_WEEKLY_SCHEDULE,
     SERVICE_REQUEST_RESEND,
     SERVICE_SEND_ATTENDANCE,
@@ -138,6 +139,18 @@ async def handle_update_state(
                         attributes,
                     )
                     _LOGGER.debug("Updated messages for entry %s", config_entry_id)
+                elif "seating" in entity_id:
+                    entry_data[SEATING_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_seating",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug("Updated seating for entry %s", config_entry_id)
                 elif "lesson_program" in entity_id:
                     slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
                     lesson_programs = entry_data.setdefault(LESSON_PROGRAMS_DATA, {})
@@ -192,6 +205,11 @@ async def handle_update_state(
                 entry_data[MESSAGES_DATA] = {"state": state, "attributes": attributes}
                 async_dispatcher_send(
                     hass, f"{DOMAIN}_{entry_id}_update_messages", state, attributes
+                )
+            elif "seating" in entity_id:
+                entry_data[SEATING_DATA] = {"state": state, "attributes": attributes}
+                async_dispatcher_send(
+                    hass, f"{DOMAIN}_{entry_id}_update_seating", state, attributes
                 )
             elif "lesson_program" in entity_id:
                 slug = entity_id.replace(f"sensor.{DOMAIN}_", "")

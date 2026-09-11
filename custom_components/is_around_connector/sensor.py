@@ -33,6 +33,7 @@ from .const import (
     MEMORIALS_DATA,
     MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
+    SEATING_DATA,
     WEEKLY_SCHEDULE_DATA,
 )
 from .coordinator import IsAroundDataUpdateCoordinator
@@ -57,6 +58,7 @@ async def async_setup_entry(
         IsAroundLessonsSensor(hass, entry),
         IsAroundMemorialsSensor(hass, entry),
         IsAroundMessagesSensor(hass, entry),
+        IsAroundSeatingSensor(hass, entry),
     ]
     summary_sensors = [
         AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_TOTAL, "Total"),
@@ -527,6 +529,55 @@ class IsAroundMemorialsSensor(SensorEntity):
         # Restore from stored data if available
         if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
             MEMORIALS_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundSeatingSensor(SensorEntity):
+    """Sensor showing all seating maps with their layout and allocations."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Seating"
+    _attr_icon = "mdi:seat"
+    # The maps attribute is ~85 KB, far over the recorder's 16 KB attribute limit.
+    _unrecorded_attributes = frozenset({"maps", "default_map"})
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_seating"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_seating",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            SEATING_DATA
         ):
             self._update_data(stored_data["state"], stored_data["attributes"])
 
