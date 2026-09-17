@@ -43,6 +43,7 @@ from .const import (
     SERVICE_PRINT_WEEKLY_SCHEDULE,
     SERVICE_REQUEST_RESEND,
     SERVICE_SEND_ATTENDANCE,
+    SERVICE_TYPES_DATA,
     WEEKLY_SCHEDULE_DATA,
     WS_TYPE_OPERATION_RESULT,
     WS_TYPE_PDF_CHUNK,
@@ -89,7 +90,21 @@ async def handle_update_state(
         if config_entry_id in hass.data.get(DOMAIN, {}):
             entry_data = hass.data[DOMAIN][config_entry_id]
             if isinstance(entry_data, dict):
-                if "weekly_schedule" in entity_id:
+                if "service_types" in entity_id:
+                    entry_data[SERVICE_TYPES_DATA] = {
+                        "state": state,
+                        "attributes": attributes,
+                    }
+                    async_dispatcher_send(
+                        hass,
+                        f"{DOMAIN}_{config_entry_id}_update_service_types",
+                        state,
+                        attributes,
+                    )
+                    _LOGGER.debug(
+                        "Updated service_types for entry %s", config_entry_id
+                    )
+                elif "weekly_schedule" in entity_id:
                     entry_data[WEEKLY_SCHEDULE_DATA] = {
                         "state": state,
                         "attributes": attributes,
@@ -180,7 +195,18 @@ async def handle_update_state(
             if not isinstance(entry_data, dict):
                 continue
 
-            if "weekly_schedule" in entity_id:
+            if "service_types" in entity_id:
+                entry_data[SERVICE_TYPES_DATA] = {
+                    "state": state,
+                    "attributes": attributes,
+                }
+                async_dispatcher_send(
+                    hass,
+                    f"{DOMAIN}_{entry_id}_update_service_types",
+                    state,
+                    attributes,
+                )
+            elif "weekly_schedule" in entity_id:
                 entry_data[WEEKLY_SCHEDULE_DATA] = {
                     "state": state,
                     "attributes": attributes,

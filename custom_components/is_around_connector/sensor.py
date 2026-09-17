@@ -34,6 +34,7 @@ from .const import (
     MESSAGES_DATA,
     NEXT_OBSERVANCE_DATE,
     SEATING_DATA,
+    SERVICE_TYPES_DATA,
     WEEKLY_SCHEDULE_DATA,
 )
 from .coordinator import IsAroundDataUpdateCoordinator
@@ -59,6 +60,7 @@ async def async_setup_entry(
         IsAroundMemorialsSensor(hass, entry),
         IsAroundMessagesSensor(hass, entry),
         IsAroundSeatingSensor(hass, entry),
+        IsAroundServiceTypesSensor(hass, entry),
     ]
     summary_sensors = [
         AttendanceSummarySensor(coordinator, entry, ATTENDANCE_STATS_TOTAL, "Total"),
@@ -529,6 +531,53 @@ class IsAroundMemorialsSensor(SensorEntity):
         # Restore from stored data if available
         if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
             MEMORIALS_DATA
+        ):
+            self._update_data(stored_data["state"], stored_data["attributes"])
+
+    @callback
+    def _update_data(self, state: str, attributes: dict) -> None:
+        """Update the sensor with new data."""
+        self._attr_native_value = state
+        self._attr_extra_state_attributes = attributes
+        self.async_write_ha_state()
+
+
+class IsAroundServiceTypesSensor(SensorEntity):
+    """Sensor showing the schedule service types with their labels and colors."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Service Types"
+    _attr_icon = "mdi:shape"
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        """Initialize the sensor."""
+        self.hass = hass
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_service_types"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return {
+            "identifiers": {(DOMAIN, self._entry.entry_id)},
+            "name": "Is Around Connector",
+            "entry_type": dr.DeviceEntryType.SERVICE,
+        }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_service_types",
+                self._update_data,
+            )
+        )
+        # Restore from stored data if available
+        if stored_data := self.hass.data[DOMAIN][self._entry.entry_id].get(
+            SERVICE_TYPES_DATA
         ):
             self._update_data(stored_data["state"], stored_data["attributes"])
 

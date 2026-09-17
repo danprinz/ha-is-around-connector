@@ -98,4 +98,5 @@ request_resend:
             - "memorials"
             - "lesson_programs"
             - "seating"
+            - "service_types"
           multiple: true

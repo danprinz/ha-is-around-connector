@@ -46,6 +46,7 @@ MEMORIALS_DATA = "memorials_data"
 MESSAGES_DATA = "messages_data"
 LESSON_PROGRAMS_DATA = "lesson_programs_data"
 SEATING_DATA = "seating_data"
+SERVICE_TYPES_DATA = "service_types_data"
 
 # Services
 SERVICE_REQUEST_RESEND = "request_resend"
