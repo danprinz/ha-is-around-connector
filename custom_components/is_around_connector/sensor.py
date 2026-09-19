@@ -50,7 +50,7 @@ async def async_setup_entry(
     """Set up the Is Around Connector sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     sensors = [
-        IsAroundAppUrlSensor(entry),
+        IsAroundAppUrlSensor(hass, entry),
         IsAroundPrinterSensor(entry),
         IsAroundLastInvokedSensor(hass, entry),
         AttendancePushInitiatedCountSensor(hass, entry),
@@ -127,18 +127,26 @@ async def async_setup_entry(
 
 
 class IsAroundAppUrlSensor(SensorEntity):
-    """Sensor showing the configured App URL."""
+    """Sensor showing the configured App URL.
+
+    Also doubles as the connector's diagnostic sensor for the wire-protocol
+    version last reported by the is-around server (``entity_key`` /
+    ``protocol_version`` on incoming ``is_around/update_state`` messages -
+    see ``handle_update_state`` in ``__init__.py``).
+    """
 
     _attr_has_entity_name = True
     _attr_name = "App URL"
     _attr_icon = "mdi:web"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the sensor."""
+        self.hass = hass
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_app_url"
         self._attr_native_value = entry.data.get(CONF_APP_URL)
+        self._attr_extra_state_attributes = {"protocol_version": None}
 
     @property
     def device_info(self):
@@ -148,6 +156,28 @@ class IsAroundAppUrlSensor(SensorEntity):
             "name": "Is Around Connector",
             "entry_type": dr.DeviceEntryType.SERVICE,
         }
+
+    async def async_added_to_hass(self) -> None:
+        """Register callbacks and restore state."""
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self._entry.entry_id}_update_protocol_version",
+                self._update_protocol_version,
+            )
+        )
+        # Restore the last known value
+        stored_version = self.hass.data[DOMAIN][self._entry.entry_id].get(
+            "protocol_version"
+        )
+        if stored_version is not None:
+            self._update_protocol_version(stored_version)
+
+    @callback
+    def _update_protocol_version(self, protocol_version) -> None:
+        """Update the protocol_version attribute."""
+        self._attr_extra_state_attributes["protocol_version"] = protocol_version
+        self.async_write_ha_state()
 
 
 class IsAroundPrinterSensor(SensorEntity):

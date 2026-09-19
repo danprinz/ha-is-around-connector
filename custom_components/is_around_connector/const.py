@@ -1,5 +1,7 @@
 """Constants for the Is Around Connector integration."""
 
+from . import contract
+
 DOMAIN = "is_around_connector"
 
 CONF_APP_URL = "app_url"
@@ -22,31 +24,33 @@ ATTENDANCE_STATS_SHAHARIT_ONLY = "shaharitOnly"
 ATTENDANCE_STATS_NO = "no"
 ATTENDANCE_STATS_ATTENDING = "attending"
 
-# Event types fired by HA integration (requests to server)
-EVENT_REQUEST_OBSERVANCES = "is_around_connector_request_observances"
-EVENT_REQUEST_PDF = "is_around_connector_request_pdf"
-EVENT_REQUEST_ATTENDANCE_PUSH = "is_around_connector_request_attendance_push"
-EVENT_REQUEST_ATTENDANCE_STATS = "is_around_connector_request_attendance_stats"
-EVENT_REQUEST_RESEND = "is_around_connector_request_resend"
-EVENT_REQUEST_SCHEDULE_PDF = "is_around_connector_request_schedule_pdf"
+# Event types fired by HA integration (requests to server) - wire protocol,
+# shared with is-around (IA) via packages/contract. See contract.py.
+EVENT_REQUEST_OBSERVANCES = contract.HA_EVENTS["REQUEST_OBSERVANCES"]
+EVENT_REQUEST_PDF = contract.HA_EVENTS["REQUEST_PDF"]
+EVENT_REQUEST_ATTENDANCE_PUSH = contract.HA_EVENTS["REQUEST_ATTENDANCE_PUSH"]
+EVENT_REQUEST_ATTENDANCE_STATS = contract.HA_EVENTS["REQUEST_ATTENDANCE_STATS"]
+EVENT_REQUEST_RESEND = contract.HA_EVENTS["REQUEST_RESEND"]
+EVENT_REQUEST_SCHEDULE_PDF = contract.HA_EVENTS["REQUEST_SCHEDULE_PDF"]
 
-# WebSocket command types received from server (responses)
-WS_TYPE_UPDATE_STATE = "is_around/update_state"
-WS_TYPE_PDF_CHUNK = "is_around/pdf_chunk"
-WS_TYPE_OPERATION_RESULT = "is_around/operation_result"
+# WebSocket command types received from server (responses) - wire protocol.
+WS_TYPE_UPDATE_STATE = contract.WS_MESSAGE_TYPES["UPDATE_STATE"]
+WS_TYPE_PDF_CHUNK = contract.WS_MESSAGE_TYPES["PDF_CHUNK"]
+WS_TYPE_OPERATION_RESULT = contract.WS_MESSAGE_TYPES["OPERATION_RESULT"]
 
 # Response status constants
 RESPONSE_STATUS_SUCCESS = "success"
 RESPONSE_STATUS_ERROR = "error"
 
-# New sensor data keys
-WEEKLY_SCHEDULE_DATA = "weekly_schedule_data"
-LESSONS_DATA = "lessons_data"
-MEMORIALS_DATA = "memorials_data"
-MESSAGES_DATA = "messages_data"
-LESSON_PROGRAMS_DATA = "lesson_programs_data"
-SEATING_DATA = "seating_data"
-SERVICE_TYPES_DATA = "service_types_data"
+# New sensor data keys - wire protocol, shared with is-around (IA) via
+# packages/contract. See contract.py.
+WEEKLY_SCHEDULE_DATA = contract.CONNECTOR_DATA_KEYS["WEEKLY_SCHEDULE_DATA"]
+LESSONS_DATA = contract.CONNECTOR_DATA_KEYS["LESSONS_DATA"]
+MEMORIALS_DATA = contract.CONNECTOR_DATA_KEYS["MEMORIALS_DATA"]
+MESSAGES_DATA = contract.CONNECTOR_DATA_KEYS["MESSAGES_DATA"]
+LESSON_PROGRAMS_DATA = contract.CONNECTOR_DATA_KEYS["LESSON_PROGRAMS_DATA"]
+SEATING_DATA = contract.CONNECTOR_DATA_KEYS["SEATING_DATA"]
+SERVICE_TYPES_DATA = contract.CONNECTOR_DATA_KEYS["SERVICE_TYPES_DATA"]
 
 # Services
 SERVICE_REQUEST_RESEND = "request_resend"

@@ -25,6 +25,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 
+from . import contract
 from .connector import IsAroundConnector
 from .const import (
     ATTENDANCE_PUSH_INITIATED_COUNT,
@@ -58,6 +59,44 @@ PLATFORMS: list[Platform] = [Platform.SENSOR]
 STORAGE_VERSION = 1
 STORAGE_KEY_PREFIX = f"{DOMAIN}_"
 
+# entity_key -> (data key stored on entry_data, dispatcher signal suffix).
+# Mirrors the legacy entity_id-substring routing below one-for-one so a
+# modern IA build (which sends entity_key) and an older one (which doesn't)
+# land on the same sensor/data-key/signal for the same logical entity.
+_ENTITY_KEY_ROUTES: dict[str, tuple[str, str]] = {
+    contract.ENTITY_KEYS["SERVICE_TYPES"]: (SERVICE_TYPES_DATA, "update_service_types"),
+    contract.ENTITY_KEYS["WEEKLY_SCHEDULE"]: (
+        WEEKLY_SCHEDULE_DATA,
+        "update_weekly_schedule",
+    ),
+    contract.ENTITY_KEYS["LESSONS"]: (LESSONS_DATA, "update_lessons"),
+    contract.ENTITY_KEYS["MEMORIALS"]: (MEMORIALS_DATA, "update_memorials"),
+    contract.ENTITY_KEYS["COMMUNITY_MESSAGES"]: (MESSAGES_DATA, "update_messages"),
+    contract.ENTITY_KEYS["SEATING"]: (SEATING_DATA, "update_seating"),
+}
+
+_protocol_version_mismatch_warned = False
+
+
+def _warn_protocol_version_mismatch(received: float) -> None:
+    """Log a one-time warning when the sender's protocol_version differs.
+
+    Mirrors the one-shot-flag pattern used elsewhere in HA integrations for
+    noisy-but-only-need-to-say-it-once warnings (e.g. deprecation notices) -
+    a module-level flag so a busy connector doesn't spam the log once per
+    message.
+    """
+    global _protocol_version_mismatch_warned
+    if _protocol_version_mismatch_warned:
+        return
+    _protocol_version_mismatch_warned = True
+    _LOGGER.warning(
+        "is_around_connector: received protocol_version=%s from is-around "
+        "server, expected %s; the connector and is-around may be out of sync",
+        received,
+        contract.PROTOCOL_VERSION,
+    )
+
 
 @websocket_api.websocket_command(
     {
@@ -67,6 +106,8 @@ STORAGE_KEY_PREFIX = f"{DOMAIN}_"
         vol.Optional("attributes", default={}): dict,
         vol.Optional("config_entry_id"): str,  # New: for observances data
         vol.Optional("data"): dict,  # New: for observances data
+        vol.Optional("entity_key"): str,
+        vol.Optional("protocol_version"): vol.Any(int, float),
     }
 )
 @websocket_api.async_response
@@ -86,102 +127,177 @@ async def handle_update_state(
         entity_id = msg["data"]["entity_id"]
         state = msg["data"]["state"]
         attributes = msg["data"].get("attributes", {})
+        entity_key = msg.get("entity_key")
+        protocol_version = msg.get("protocol_version")
 
         if config_entry_id in hass.data.get(DOMAIN, {}):
             entry_data = hass.data[DOMAIN][config_entry_id]
             if isinstance(entry_data, dict):
-                if "service_types" in entity_id:
-                    entry_data[SERVICE_TYPES_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
+                if protocol_version is not None:
+                    entry_data["protocol_version"] = protocol_version
                     async_dispatcher_send(
                         hass,
-                        f"{DOMAIN}_{config_entry_id}_update_service_types",
-                        state,
-                        attributes,
+                        f"{DOMAIN}_{config_entry_id}_update_protocol_version",
+                        protocol_version,
                     )
-                    _LOGGER.debug("Updated service_types for entry %s", config_entry_id)
-                elif "weekly_schedule" in entity_id:
-                    entry_data[WEEKLY_SCHEDULE_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_weekly_schedule",
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug(
-                        "Updated weekly_schedule for entry %s", config_entry_id
-                    )
-                elif "lessons" in entity_id:
-                    entry_data[LESSONS_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_lessons",
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug("Updated lessons for entry %s", config_entry_id)
-                elif "memorials" in entity_id:
-                    entry_data[MEMORIALS_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_memorials",
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug("Updated memorials for entry %s", config_entry_id)
-                elif "messages" in entity_id:
-                    entry_data[MESSAGES_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_messages",
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug("Updated messages for entry %s", config_entry_id)
-                elif "seating" in entity_id:
-                    entry_data[SEATING_DATA] = {
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_seating",
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug("Updated seating for entry %s", config_entry_id)
-                elif "lesson_program" in entity_id:
-                    slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
-                    lesson_programs = entry_data.setdefault(LESSON_PROGRAMS_DATA, {})
-                    lesson_programs[slug] = {
-                        "entity_id": entity_id,
-                        "state": state,
-                        "attributes": attributes,
-                    }
-                    async_dispatcher_send(
-                        hass,
-                        f"{DOMAIN}_{config_entry_id}_update_lesson_program",
-                        slug,
-                        state,
-                        attributes,
-                    )
-                    _LOGGER.debug(
-                        "Updated lesson_program %s for entry %s", slug, config_entry_id
-                    )
+                    if protocol_version != contract.PROTOCOL_VERSION:
+                        _warn_protocol_version_mismatch(protocol_version)
+
+                dispatched = False
+                if entity_key is not None:
+                    if entity_key in _ENTITY_KEY_ROUTES:
+                        data_key, signal_suffix = _ENTITY_KEY_ROUTES[entity_key]
+                        entry_data[data_key] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_{signal_suffix}",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug(
+                            "Updated %s for entry %s (entity_key=%s)",
+                            signal_suffix,
+                            config_entry_id,
+                            entity_key,
+                        )
+                        dispatched = True
+                    elif entity_key.startswith(contract.LESSON_PROGRAM_KEY_PREFIX):
+                        slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
+                        lesson_programs = entry_data.setdefault(
+                            LESSON_PROGRAMS_DATA, {}
+                        )
+                        lesson_programs[slug] = {
+                            "entity_id": entity_id,
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_lesson_program",
+                            slug,
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug(
+                            "Updated lesson_program %s for entry %s (entity_key=%s)",
+                            slug,
+                            config_entry_id,
+                            entity_key,
+                        )
+                        dispatched = True
+                    else:
+                        _LOGGER.warning(
+                            "Unknown entity_key %r for entry %s; falling back to "
+                            "legacy entity_id substring matching",
+                            entity_key,
+                            config_entry_id,
+                        )
+
+                if not dispatched:
+                    # Legacy substring-elif chain - unchanged. Used whenever
+                    # entity_key is absent (older IA builds, replayed
+                    # fixtures) or didn't match a known key above.
+                    if "service_types" in entity_id:
+                        entry_data[SERVICE_TYPES_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_service_types",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug(
+                            "Updated service_types for entry %s", config_entry_id
+                        )
+                    elif "weekly_schedule" in entity_id:
+                        entry_data[WEEKLY_SCHEDULE_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_weekly_schedule",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug(
+                            "Updated weekly_schedule for entry %s", config_entry_id
+                        )
+                    elif "lessons" in entity_id:
+                        entry_data[LESSONS_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_lessons",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug("Updated lessons for entry %s", config_entry_id)
+                    elif "memorials" in entity_id:
+                        entry_data[MEMORIALS_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_memorials",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug("Updated memorials for entry %s", config_entry_id)
+                    elif "messages" in entity_id:
+                        entry_data[MESSAGES_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_messages",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug("Updated messages for entry %s", config_entry_id)
+                    elif "seating" in entity_id:
+                        entry_data[SEATING_DATA] = {
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_seating",
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug("Updated seating for entry %s", config_entry_id)
+                    elif "lesson_program" in entity_id:
+                        slug = entity_id.replace(f"sensor.{DOMAIN}_", "")
+                        lesson_programs = entry_data.setdefault(
+                            LESSON_PROGRAMS_DATA, {}
+                        )
+                        lesson_programs[slug] = {
+                            "entity_id": entity_id,
+                            "state": state,
+                            "attributes": attributes,
+                        }
+                        async_dispatcher_send(
+                            hass,
+                            f"{DOMAIN}_{config_entry_id}_update_lesson_program",
+                            slug,
+                            state,
+                            attributes,
+                        )
+                        _LOGGER.debug(
+                            "Updated lesson_program %s for entry %s",
+                            slug,
+                            config_entry_id,
+                        )
 
     # Format 2: entity_id at top level (legacy format)
     elif "entity_id" in msg:
