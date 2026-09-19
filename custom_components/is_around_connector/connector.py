@@ -88,7 +88,7 @@ class IsAroundConnector:
             )
             _LOGGER.debug("Received observances data: %s", observances_data)
             return observances_data
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning("Timeout waiting for observances response")
             return None
         finally:

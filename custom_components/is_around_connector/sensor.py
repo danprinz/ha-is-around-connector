@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import EntityCategory, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.const import Platform
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -20,7 +21,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     ATTENDANCE_PUSH_INITIATED_COUNT,
     ATTENDANCE_STATS_ARVIT_ONLY,
-    ATTENDANCE_STATS_ATTENDING,
     ATTENDANCE_STATS_NO,
     ATTENDANCE_STATS_SHAHARIT_ONLY,
     ATTENDANCE_STATS_TOTAL,
@@ -120,9 +120,9 @@ async def async_setup_entry(
     )
 
     # Restore any lesson programs already received before this platform was set up
-    for slug, data in hass.data[DOMAIN][entry.entry_id].get(
-        LESSON_PROGRAMS_DATA, {}
-    ).items():
+    for slug, data in (
+        hass.data[DOMAIN][entry.entry_id].get(LESSON_PROGRAMS_DATA, {}).items()
+    ):
         _handle_lesson_program(slug, data["state"], data["attributes"])
 
 

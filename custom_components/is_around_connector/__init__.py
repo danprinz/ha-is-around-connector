@@ -4,26 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from datetime import date, timedelta
-from functools import partial
 import logging
-from pathlib import Path
 import re
 import tempfile
+from datetime import date, timedelta
+from functools import partial
+from pathlib import Path
 from typing import Any
-import uuid
 
+import homeassistant.util.dt as dt_util
+import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
-import homeassistant.util.dt as dt_util
-import voluptuous as vol
 
 from .connector import IsAroundConnector
 from .const import (
@@ -101,9 +101,7 @@ async def handle_update_state(
                         state,
                         attributes,
                     )
-                    _LOGGER.debug(
-                        "Updated service_types for entry %s", config_entry_id
-                    )
+                    _LOGGER.debug("Updated service_types for entry %s", config_entry_id)
                 elif "weekly_schedule" in entity_id:
                     entry_data[WEEKLY_SCHEDULE_DATA] = {
                         "state": state,
@@ -591,7 +589,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 base64_pdf = await asyncio.wait_for(
                     entry_data["pdf_future"], timeout=RESPONSE_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.error("Timeout waiting for PDF response")
                 return
             finally:
@@ -710,10 +708,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             connector.request_attendance_push()
 
             try:
-                response_data = await asyncio.wait_for(
+                await asyncio.wait_for(
                     entry_data["operation_future"], timeout=RESPONSE_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.error("Timeout waiting for attendance push response")
                 return
             finally:
@@ -754,7 +752,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 base64_pdf = await asyncio.wait_for(
                     entry_data["schedule_pdf_future"], timeout=RESPONSE_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.error("Timeout waiting for schedule PDF response")
                 return
             finally:

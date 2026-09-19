@@ -43,6 +43,3 @@ Thumbs.db
 # Logs and databases
 *.log
 *.sqlite3
-custom_components/image_manager/images/*.pdf
-custom_components/image_manager/images/*.png
-custom_components/image_manager/images/metadata.json

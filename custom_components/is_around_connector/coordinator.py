@@ -74,7 +74,7 @@ class IsAroundDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any] | None]
                 stats = await asyncio.wait_for(
                     entry_data["operation_future"], timeout=RESPONSE_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _LOGGER.warning("Timeout waiting for attendance stats response")
                 return None
             finally:
