@@ -1,12 +1,16 @@
 {
   "domain": "is_around_connector",
   "name": "Is Around Connector",
-  "codeowners": ["@danprinz"],
+  "codeowners": [
+    "@danprinz"
+  ],
   "config_flow": true,
-  "dependencies": ["ipp_printer_service"],
+  "dependencies": [
+    "ipp_printer_service"
+  ],
   "documentation": "https://github.com/danprinz/ha-is-around-connector",
-  "issue_tracker": "https://github.com/danprinz/ha-is-around-connector/issues",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/danprinz/ha-is-around-connector/issues",
   "requirements": [],
   "version": "1.0.0"
 }
