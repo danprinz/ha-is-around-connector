@@ -183,7 +183,7 @@ class MemorialAttribute(TypedDict):
     memorialDay: str | None
     startFreeze: NotRequired[str | None]
     endFreeze: NotRequired[str | None]
-    createdAt: str
+    createdAt: str | None
     updatedAt: str
 
 
