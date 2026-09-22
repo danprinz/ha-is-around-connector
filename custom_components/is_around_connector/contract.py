@@ -123,12 +123,21 @@ class ScheduleService(TypedDict):
     serviceType: str
 
 
+SpecialDayBehavior = Literal["standalone", "override"]
+
+
+class SpecialDay(TypedDict):
+    name: str
+    behavior: SpecialDayBehavior
+
+
 class DaySchedule(TypedDict):
     hebrewDate: str
     parsha: NotRequired[str]
     services: list[ScheduleService]
     is_ready: bool
     lessonPrograms: NotRequired[list[LessonProgramRef]]
+    specialDay: NotRequired[SpecialDay]
 
 
 class LessonAttribute(TypedDict):
