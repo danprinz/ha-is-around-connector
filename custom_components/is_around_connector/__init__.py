@@ -468,6 +468,14 @@ async def handle_pdf_chunk(
     connection.send_result(msg["id"])
 
 
+class IsAroundOperationError(Exception):
+    """Is Around reported a failed operation (operation_result success=False)."""
+
+
+# Waiters that a failed operation_result must release.
+_RESULT_FUTURE_KEYS = ("operation_future", "pdf_future", "schedule_pdf_future")
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): WS_TYPE_OPERATION_RESULT,
@@ -495,6 +503,10 @@ async def handle_operation_result(
         config_entry_id,
         success,
     )
+    if not success:
+        _LOGGER.error(
+            "Is Around operation failed: %s", error_message or "no error message"
+        )
 
     if config_entry_id not in hass.data.get(DOMAIN, {}):
         _LOGGER.error("Config entry %s not found", config_entry_id)
@@ -549,14 +561,21 @@ async def handle_operation_result(
             # Manually update coordinator data
             coordinator.async_set_updated_data(data)
 
-    # Signal any waiting futures
-    if "operation_future" in entry_data and not entry_data["operation_future"].done():
-        if success:
-            entry_data["operation_future"].set_result(data)
-        else:
-            entry_data["operation_future"].set_exception(
-                Exception(error_message or "Operation failed")
-            )
+    # Signal any waiting futures. A success only completes operation_future: the
+    # PDF futures complete via PDF chunks. A failure carries no request_id, so
+    # it fails every pending waiter — otherwise a failed PDF request leaves the
+    # print service hanging until RESPONSE_TIMEOUT.
+    if success:
+        future = entry_data.get("operation_future")
+        if future is not None and not future.done():
+            future.set_result(data)
+    else:
+        for key in _RESULT_FUTURE_KEYS:
+            future = entry_data.get(key)
+            if future is not None and not future.done():
+                future.set_exception(
+                    IsAroundOperationError(error_message or "Operation failed")
+                )
 
     connection.send_result(msg["id"])
 
@@ -707,6 +726,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             except TimeoutError:
                 _LOGGER.error("Timeout waiting for PDF response")
+                return
+            except IsAroundOperationError as err:
+                _LOGGER.error("PDF request failed: %s", err)
                 return
             finally:
                 entry_data.pop("pdf_future", None)
@@ -870,6 +892,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             except TimeoutError:
                 _LOGGER.error("Timeout waiting for schedule PDF response")
+                return
+            except IsAroundOperationError as err:
+                _LOGGER.error("Schedule PDF request failed: %s", err)
                 return
             finally:
                 entry_data.pop("schedule_pdf_future", None)
